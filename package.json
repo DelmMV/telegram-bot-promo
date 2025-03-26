@@ -2,10 +2,10 @@
   "name": "telegram-promo-bot",
   "version": "1.0.0",
   "description": "Telegram bot for managing and distributing promo codes",
-  "main": "index.js",
+  "main": "promo.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "node promo.js",
+    "dev": "nodemon promo.js"
   },
   "dependencies": {
     "dotenv": "^10.0.0",
