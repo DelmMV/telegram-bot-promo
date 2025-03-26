@@ -167,13 +167,10 @@ module.exports = (bot) => {
           `Выдан: ${formatDate(claimedPromo.claimedAt)}\n` +
           `Активирован: ${formatDate(new Date())}\n\n` +
           `Статистика по типу "${promo.name}":\n` +
-          `Использовано: ${promo.usedCount + 1}/${promo.totalLimit}`,
+          `Использовано всего: ${promo.usedCount}/${promo.totalLimit}`,
           adminKeyboard
         );
-        
-        // Инкрементируем счетчик использований типа промокода
-        await Promo.findByIdAndUpdate(claimedPromo.promoId, { $inc: { usedCount: 1 } });
-        
+              
         return ctx.scene.leave();
       } catch (error) {
         console.error('Error in promo activation:', error);
@@ -1178,9 +1175,7 @@ module.exports = (bot) => {
           ctx.editMessageText('Лимит использования этого промокода исчерпан.', adminKeyboard);
         });
       }
-      
-      // Обновляем счетчик использования промокода
-      await Promo.findByIdAndUpdate(promoId, { $inc: { usedCount: 1 } });
+    
       
       // Сохраняем информацию об активированном промокоде
       const newActivation = new ActivatedPromo({
@@ -1198,7 +1193,7 @@ module.exports = (bot) => {
         `Название: ${promo.name}\n` +
         `Описание: ${promo.description}\n` +
         `Действителен до: ${formatDate(promo.expiresAt)}\n\n` +
-        `Использовано: ${promo.usedCount + 1}/${promo.totalLimit}`,
+        `Использовано: ${promo.usedCount}/${promo.totalLimit}`,
         adminKeyboard
       );
     } catch (error) {

@@ -140,12 +140,10 @@ module.exports = (bot) => {
           `Выдан: ${formatDate(claimedPromo.claimedAt)}\n` +
           `Активирован: ${formatDate(new Date())}\n\n` +
           `Статистика по типу "${promo.name}":\n` +
-          `Использовано: ${promo.usedCount + 1}/${promo.totalLimit}`,
+          `Использовано всего: ${promo.usedCount}/${promo.totalLimit}`,
           sellerKeyboard
         );
         
-        // Инкрементируем счетчик использований типа промокода
-        await Promo.findByIdAndUpdate(claimedPromo.promoId, { $inc: { usedCount: 1 } });
         
         return ctx.scene.leave();
       } catch (error) {

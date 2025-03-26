@@ -88,8 +88,6 @@ module.exports = (bot) => {
       // Генерируем уникальный промокод для пользователя
       const generatedCode = generatePromoCode();
       
-      // Обновляем счетчик использования промокода
-      await Promo.findByIdAndUpdate(promoId, { $inc: { usedCount: 1 } });
       
       // Добавляем промокод в список полученных пользователем
       user.claimedPromos.push({
