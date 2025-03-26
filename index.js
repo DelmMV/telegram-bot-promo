@@ -11,6 +11,7 @@ const { formatDate } = require('./utils/helpers');
 const { checkGroupMembership } = require('./middlewares/membership');
 const { generatePromoCode } = require('./utils/promo-generator');
 const { isAdmin, isSeller } = require('./middlewares/auth');
+const { isPrivateChat } = require('./middlewares/private-chat');
 
 // Инициализация бота
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -23,6 +24,21 @@ mongoose.set('strictQuery', false);
 
 // Настройка сессии
 bot.use(session());
+bot.use((ctx, next) => {
+  // Пропускаем обновления без сообщений или без текста
+  if (!ctx.message || !ctx.message.text) {
+    return next();
+  }
+  
+  // Если это команда (/command) и не приватный чат - игнорируем
+  if (ctx.message.text.startsWith('/') && ctx.chat && ctx.chat.type !== 'private') {
+    console.log(`Блокирована команда в групповом чате: ${ctx.message.text}, тип чата: ${ctx.chat.type}`);
+    return; // Прерываем выполнение middleware
+  }
+  
+  // В других случаях продолжаем обработку
+  return next();
+});
 
 // Импортируем обработчики
 const adminHandler = require('./handlers/admin');
@@ -90,8 +106,8 @@ bot.use(stage.middleware());
 // Регистрируем обработчики продавца
 registerSellerHandlers();
 
-// Обработчик команды start
-bot.start(async (ctx) => {
+// Обработчик команды start - только для приватных чатов
+bot.command('start', isPrivateChat, async (ctx) => {
   try {
     const { id, first_name, last_name, username } = ctx.from;
     
@@ -122,13 +138,13 @@ bot.start(async (ctx) => {
   }
 });
 
-// Команда для получения ID пользователя
+// Команда для получения ID пользователя - доступна и в группах
 bot.command('myid', (ctx) => {
   ctx.reply(`Ваш Telegram ID: ${ctx.from.id}`);
 });
 
-// Обработчик для команды /admin
-bot.command('admin', async (ctx) => {
+// Обработчик для команды /admin - только для приватных чатов
+bot.command('admin', isPrivateChat, async (ctx) => {
   try {
     const telegramId = ctx.from.id;
     const admin = await Admin.findOne({ telegramId, isActive: true, role: 'admin' });
@@ -144,13 +160,36 @@ bot.command('admin', async (ctx) => {
   }
 });
 
-// Обработчик для списка промокодов
-bot.hears('Промокоды', (ctx) => {
+// Обработчик команды /seller - только для приватных чатов
+bot.command('seller', isPrivateChat, async (ctx) => {
+  try {
+    const telegramId = ctx.from.id;
+    console.log(`Пользователь ${telegramId} запустил команду /seller в приватном чате`);
+    
+    const seller = await Admin.findOne({ 
+      telegramId, 
+      isActive: true,
+      $or: [{ role: 'seller' }, { role: 'admin' }]
+    });
+    
+    if (!seller) {
+      return ctx.reply('У вас нет доступа к панели продавца.');
+    }
+    
+    return ctx.reply('Добро пожаловать в панель продавца.', sellerKeyboard);
+  } catch (error) {
+    console.error('Error in seller command:', error);
+    return ctx.reply('Произошла ошибка при входе в панель продавца.');
+  }
+});
+
+// Обработчик для списка промокодов - проверяем только в приватном чате
+bot.hears('Промокоды', isPrivateChat, (ctx) => {
   return ctx.scene.enter('promo-list');
 });
 
-// Обработчик для моих промокодов
-bot.hears('Мои промокоды', async (ctx) => {
+// Обработчик для моих промокодов - проверяем только в приватном чате
+bot.hears('Мои промокоды', isPrivateChat, async (ctx) => {
   try {
     const userId = ctx.from.id;
     
@@ -232,19 +271,25 @@ bot.hears('Мои промокоды', async (ctx) => {
   }
 });
 
-// Обработчик для кнопки администратора "Активировать промокод вручную"
-bot.hears('Активировать промокод вручную', isAdmin, (ctx) => {
+// Обработчик для кнопки администратора "Активировать промокод вручную" - только в приватном чате
+bot.hears('Активировать промокод вручную', isPrivateChat, isAdmin, (ctx) => {
   ctx.scene.enter('activate-promo');
 });
 
-// Обработчик для кнопки "История активаций"
-bot.hears('История активаций', isAdmin, (ctx) => {
+// Обработчик для кнопки "История активаций" - только в приватном чате
+bot.hears('История активаций', isPrivateChat, isAdmin, (ctx) => {
   ctx.scene.enter('activated-promos');
 });
 
-// Обработка выбора промокода пользователем
+// Обработка выбора промокода пользователем - inline кнопки работают и в группах
 bot.action(/promo:(.+)/, async (ctx) => {
   try {
+    // Проверяем, что это приватный чат
+    if (ctx.chat.type !== 'private') {
+      await ctx.answerCbQuery('Эта функция доступна только в приватном чате с ботом.');
+      return;
+    }
+    
     const promoId = ctx.match[1];
     const userId = ctx.from.id;
     
@@ -323,15 +368,15 @@ bot.action(/promo:(.+)/, async (ctx) => {
   }
 });
 
-// Обработка кнопок меню админ-панели
-bot.hears('Управление промокодами', isAdmin, (ctx) => {
+// Обработка кнопок меню админ-панели - только в приватном чате
+bot.hears('Управление промокодами', isPrivateChat, isAdmin, (ctx) => {
   ctx.reply('Выберите действие:', Markup.keyboard([
     ['Добавить промокод', 'Список промокодов'],
     ['Назад']
   ]).resize());
 });
 
-bot.hears('Управление администраторами', isAdmin, (ctx) => {
+bot.hears('Управление администраторами', isPrivateChat, isAdmin, (ctx) => {
   ctx.reply('Выберите действие:', Markup.keyboard([
     ['Добавить администратора', 'Добавить продавца'],
     ['Список администраторов', 'Список продавцов'],
@@ -339,42 +384,42 @@ bot.hears('Управление администраторами', isAdmin, (ctx
   ]).resize());
 });
 
-bot.hears('Вернуться к обычному режиму', (ctx) => {
+bot.hears('Вернуться к обычному режиму', isPrivateChat, (ctx) => {
   ctx.reply('Вы вышли из режима администратора/продавца.', mainKeyboard);
 });
 
-// Обработчик для кнопки "Добавить промокод"
-bot.hears('Добавить промокод', isAdmin, (ctx) => {
+// Обработчик для кнопки "Добавить промокод" - только в приватном чате
+bot.hears('Добавить промокод', isPrivateChat, isAdmin, (ctx) => {
   ctx.scene.enter('add-promo');
 });
 
-// Обработчик для кнопки "Список промокодов"
-bot.hears('Список промокодов', isAdmin, (ctx) => {
+// Обработчик для кнопки "Список промокодов" - только в приватном чате
+bot.hears('Список промокодов', isPrivateChat, isAdmin, (ctx) => {
   ctx.scene.enter('promo-list-admin');
 });
 
-// Обработчик для кнопки "Добавить администратора"
-bot.hears('Добавить администратора', isAdmin, (ctx) => {
+// Обработчик для кнопки "Добавить администратора" - только в приватном чате
+bot.hears('Добавить администратора', isPrivateChat, isAdmin, (ctx) => {
   ctx.scene.enter('add-admin');
 });
 
-// Обработчик для кнопки "Список администраторов"
-bot.hears('Список администраторов', isAdmin, (ctx) => {
+// Обработчик для кнопки "Список администраторов" - только в приватном чате
+bot.hears('Список администраторов', isPrivateChat, isAdmin, (ctx) => {
   ctx.scene.enter('admin-list');
 });
 
-// Обработчик для кнопки "Добавить продавца"
-bot.hears('Добавить продавца', isAdmin, (ctx) => {
+// Обработчик для кнопки "Добавить продавца" - только в приватном чате
+bot.hears('Добавить продавца', isPrivateChat, isAdmin, (ctx) => {
   ctx.scene.enter('add-seller');
 });
 
-// Обработчик для кнопки "Список продавцов"
-bot.hears('Список продавцов', isAdmin, (ctx) => {
+// Обработчик для кнопки "Список продавцов" - только в приватном чате
+bot.hears('Список продавцов', isPrivateChat, isAdmin, (ctx) => {
   ctx.scene.enter('seller-list');
 });
 
-// Обработчик для кнопки "Назад" в меню управления
-bot.hears('Назад', isAdmin, (ctx) => {
+// Обработчик для кнопки "Назад" в меню управления - только в приватном чате
+bot.hears('Назад', isPrivateChat, isAdmin, (ctx) => {
   ctx.reply('Выберите раздел:', adminKeyboard);
 });
 
