@@ -1,13 +1,16 @@
 require('dotenv').config();
-const { Telegraf, session, Scenes } = require('telegraf');
+const { Telegraf, session, Scenes, Markup } = require('telegraf');
 const mongoose = require('mongoose');
 const connectDB = require('./database/connect');
 const User = require('./database/models/user');
+const Admin = require('./database/models/admin');
 const Promo = require('./database/models/promo');
-const { mainKeyboard } = require('./utils/keyboard');
+const ActivatedPromo = require('./database/models/activatedPromo');
+const { mainKeyboard, sellerKeyboard, adminKeyboard } = require('./utils/keyboard');
 const { formatDate } = require('./utils/helpers');
 const { checkGroupMembership } = require('./middlewares/membership');
 const { generatePromoCode } = require('./utils/promo-generator');
+const { isAdmin, isSeller } = require('./middlewares/auth');
 
 // Инициализация бота
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -15,37 +18,27 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 // Подключение к базе данных
 connectDB();
 
-// Добавляем строку для устранения предупреждения Mongoose
+// Устраняем предупреждение Mongoose
 mongoose.set('strictQuery', false);
 
-// Использование сессии
+// Настройка сессии
 bot.use(session());
 
-// Обработчик команды start
-bot.start(async (ctx) => {
-  try {
-    const { id, first_name, last_name, username } = ctx.from;
-    
-    // Сохраняем или обновляем пользователя в базе данных
-    await User.findOneAndUpdate(
-      { telegramId: id },
-      {
-        firstName: first_name,
-        lastName: last_name,
-        username,
-      },
-      { upsert: true, new: true }
-    );
-    
-    return ctx.reply(`Привет, ${first_name}! Добро пожаловать в бот промокодов.`, mainKeyboard);
-  } catch (error) {
-    console.error('Error in start command:', error);
-    return ctx.reply('Произошла ошибка при запуске бота. Пожалуйста, попробуйте позже.');
-  }
-});
+// Импортируем обработчики
+const adminHandler = require('./handlers/admin');
+const sellerHandler = require('./handlers/seller');
 
-// Обработчик для списка промокодов
-bot.hears('Промокоды', async (ctx) => {
+// Получаем сцены из обработчиков
+const { scenes: adminScenes } = adminHandler(bot);
+const { scenes: sellerScenes, registerSellerHandlers } = sellerHandler(bot);
+
+// Выводим информацию о сценах для отладки
+console.log('Admin scenes:', adminScenes.map(scene => scene.id));
+console.log('Seller scenes:', sellerScenes.map(scene => scene.id));
+
+// Базовая сцена для списка промокодов
+const promoListScene = new Scenes.BaseScene('promo-list');
+promoListScene.enter(async (ctx) => {
   try {
     // Получаем все активные и не истекшие промокоды
     const currentDate = new Date();
@@ -60,7 +53,6 @@ bot.hears('Промокоды', async (ctx) => {
     }
     
     // Создаем клавиатуру с промокодами
-    const { Markup } = require('telegraf');
     const keyboard = Markup.inlineKeyboard(
       promos.map(promo => [Markup.button.callback(promo.name, `promo:${promo._id}`)])
     );
@@ -70,6 +62,91 @@ bot.hears('Промокоды', async (ctx) => {
     console.error('Error in promos list:', error);
     return ctx.reply('Произошла ошибка при загрузке промокодов.', mainKeyboard);
   }
+});
+
+// Все сцены вместе
+const allScenes = [...adminScenes, ...sellerScenes, promoListScene];
+
+// Проверяем наличие дубликатов
+const sceneIds = {};
+const uniqueScenes = [];
+
+for (const scene of allScenes) {
+  if (!sceneIds[scene.id]) {
+    sceneIds[scene.id] = true;
+    uniqueScenes.push(scene);
+    console.log(`Регистрируем сцену: ${scene.id}`);
+  } else {
+    console.log(`Дубликат сцены обнаружен и пропущен: ${scene.id}`);
+  }
+}
+
+console.log('Зарегистрированные сцены:', uniqueScenes.map(scene => scene.id));
+
+// Создаем Stage
+const stage = new Scenes.Stage(uniqueScenes);
+bot.use(stage.middleware());
+
+// Регистрируем обработчики продавца
+registerSellerHandlers();
+
+// Обработчик команды start
+bot.start(async (ctx) => {
+  try {
+    const { id, first_name, last_name, username } = ctx.from;
+    
+    // Сохраняем или обновляем пользователя в базе данных
+    const user = await User.findOneAndUpdate(
+      { telegramId: id },
+      {
+        firstName: first_name,
+        lastName: last_name,
+        username,
+      },
+      { upsert: true, new: true }
+    );
+    
+    // Также обновляем информацию, если пользователь - продавец или администратор
+    const admin = await Admin.findOne({ telegramId: id });
+    if (admin) {
+      admin.firstName = first_name || admin.firstName;
+      admin.lastName = last_name || admin.lastName;
+      admin.username = username || admin.username;
+      await admin.save();
+    }
+    
+    return ctx.reply(`Привет, ${first_name}! Добро пожаловать в бот промокодов.`, mainKeyboard);
+  } catch (error) {
+    console.error('Error in start command:', error);
+    return ctx.reply('Произошла ошибка при запуске бота. Пожалуйста, попробуйте позже.');
+  }
+});
+
+// Команда для получения ID пользователя
+bot.command('myid', (ctx) => {
+  ctx.reply(`Ваш Telegram ID: ${ctx.from.id}`);
+});
+
+// Обработчик для команды /admin
+bot.command('admin', async (ctx) => {
+  try {
+    const telegramId = ctx.from.id;
+    const admin = await Admin.findOne({ telegramId, isActive: true, role: 'admin' });
+    
+    if (!admin) {
+      return ctx.reply('У вас нет доступа к админ-панели.');
+    }
+    
+    return ctx.reply('Добро пожаловать в админ-панель.', adminKeyboard);
+  } catch (error) {
+    console.error('Error in admin command:', error);
+    return ctx.reply('Произошла ошибка при входе в админ-панель.');
+  }
+});
+
+// Обработчик для списка промокодов
+bot.hears('Промокоды', (ctx) => {
+  return ctx.scene.enter('promo-list');
 });
 
 // Обработчик для моих промокодов
@@ -104,9 +181,9 @@ bot.hears('Мои промокоды', async (ctx) => {
         
         // Добавляем статус активации
         if (activated) {
-          message += `Статус: ✅ Активирован ${formatDate(activatedAt)}\n`;
+          message += `Статус: ✅ Использован ${formatDate(activatedAt)}\n`;
         } else {
-          message += `Статус: ⏳ Ожидает активации\n`;
+          message += `Статус: ⏳ Доступен для использования\n`;
         }
         
         message += `\n`;
@@ -131,11 +208,18 @@ bot.hears('Мои промокоды', async (ctx) => {
       message += `Действителен до: ${formatDate(promoId.expiresAt)}\n`;
       message += `Получен: ${formatDate(claimedAt)}\n`;
       
-      // Добавляем статус активации
+      // Добавляем статус активации этого конкретного промокода
       if (activated) {
         message += `Статус: 🔐 Использован ${formatDate(activatedAt)}\n`;
       } else {
-        message += `Статус: 🔓 Доступен для использования\n`;
+        // Проверяем тип промокода - если он истек или неактивен, отражаем это
+        if (!promoId.isActive) {
+          message += `Статус: ❌ Недоступен (промоакция отменена)\n`;
+        } else if (isExpired) {
+          message += `Статус: ⏱️ Недоступен (срок действия истек)\n`;
+        } else {
+          message += `Статус: 🔓 Доступен для использования\n`;
+        }
       }
       
       message += `\n`;
@@ -146,6 +230,16 @@ bot.hears('Мои промокоды', async (ctx) => {
     console.error('Error in my promos handler:', error);
     return ctx.reply('Произошла ошибка при загрузке ваших промокодов.', mainKeyboard);
   }
+});
+
+// Обработчик для кнопки администратора "Активировать промокод вручную"
+bot.hears('Активировать промокод вручную', isAdmin, (ctx) => {
+  ctx.scene.enter('activate-promo');
+});
+
+// Обработчик для кнопки "История активаций"
+bot.hears('История активаций', isAdmin, (ctx) => {
+  ctx.scene.enter('activated-promos');
 });
 
 // Обработка выбора промокода пользователем
@@ -209,6 +303,9 @@ bot.action(/promo:(.+)/, async (ctx) => {
     user.claimedPromos.push({
       promoId,
       code: generatedCode,
+      claimedAt: new Date(),
+      activated: false,
+      activatedAt: null
     });
     
     await user.save();
@@ -226,13 +323,72 @@ bot.action(/promo:(.+)/, async (ctx) => {
   }
 });
 
-// Загружаем обработчики для админ-панели
-const adminHandler = require('./handlers/admin');
-adminHandler(bot);
+// Обработка кнопок меню админ-панели
+bot.hears('Управление промокодами', isAdmin, (ctx) => {
+  ctx.reply('Выберите действие:', Markup.keyboard([
+    ['Добавить промокод', 'Список промокодов'],
+    ['Назад']
+  ]).resize());
+});
+
+bot.hears('Управление администраторами', isAdmin, (ctx) => {
+  ctx.reply('Выберите действие:', Markup.keyboard([
+    ['Добавить администратора', 'Добавить продавца'],
+    ['Список администраторов', 'Список продавцов'],
+    ['Назад']
+  ]).resize());
+});
+
+bot.hears('Вернуться к обычному режиму', (ctx) => {
+  ctx.reply('Вы вышли из режима администратора/продавца.', mainKeyboard);
+});
+
+// Обработчик для кнопки "Добавить промокод"
+bot.hears('Добавить промокод', isAdmin, (ctx) => {
+  ctx.scene.enter('add-promo');
+});
+
+// Обработчик для кнопки "Список промокодов"
+bot.hears('Список промокодов', isAdmin, (ctx) => {
+  ctx.scene.enter('promo-list-admin');
+});
+
+// Обработчик для кнопки "Добавить администратора"
+bot.hears('Добавить администратора', isAdmin, (ctx) => {
+  ctx.scene.enter('add-admin');
+});
+
+// Обработчик для кнопки "Список администраторов"
+bot.hears('Список администраторов', isAdmin, (ctx) => {
+  ctx.scene.enter('admin-list');
+});
+
+// Обработчик для кнопки "Добавить продавца"
+bot.hears('Добавить продавца', isAdmin, (ctx) => {
+  ctx.scene.enter('add-seller');
+});
+
+// Обработчик для кнопки "Список продавцов"
+bot.hears('Список продавцов', isAdmin, (ctx) => {
+  ctx.scene.enter('seller-list');
+});
+
+// Обработчик для кнопки "Назад" в меню управления
+bot.hears('Назад', isAdmin, (ctx) => {
+  ctx.reply('Выберите раздел:', adminKeyboard);
+});
+
+// Отслеживание ошибок
+bot.catch((err, ctx) => {
+  console.error(`Ошибка для ${ctx.updateType}`, err);
+  ctx.reply('Произошла ошибка при обработке запроса. Пожалуйста, попробуйте позже.').catch(e => {
+    console.error('Ошибка при отправке сообщения об ошибке:', e);
+  });
+});
 
 // Запуск бота
 bot.launch()
-  .then(() => console.log('Bot started'))
+  .then(() => console.log('Bot started successfully'))
   .catch((err) => console.error('Error starting bot:', err));
 
 // Включение graceful stop

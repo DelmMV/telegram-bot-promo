@@ -10,13 +10,21 @@ const adminKeyboard = Markup.keyboard([
   ['Вернуться к обычному режиму']
 ]).resize();
 
+// Изменено название кнопки
+const sellerKeyboard = Markup.keyboard([
+  ['Активировать код клиента'], // Новое название кнопки
+  ['Моя статистика'],
+  ['Вернуться в обычный режим'] // Также изменено для согласованности
+]).resize();
+
 const promoManagementKeyboard = Markup.keyboard([
   ['Добавить промокод', 'Список промокодов'],
   ['Назад']
 ]).resize();
 
 const adminManagementKeyboard = Markup.keyboard([
-  ['Добавить администратора', 'Список администраторов'],
+  ['Добавить администратора', 'Добавить продавца'],
+  ['Список администраторов', 'Список продавцов'],
   ['Назад']
 ]).resize();
 
@@ -35,6 +43,7 @@ module.exports = {
   adminKeyboard,
   promoManagementKeyboard,
   adminManagementKeyboard,
+  sellerKeyboard,
   backButton,
   cancelButton,
   generatePromoListKeyboard

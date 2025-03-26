@@ -343,6 +343,206 @@ module.exports = (bot) => {
     }
   );
   
+  const addSellerScene = new Scenes.WizardScene(
+    'add-seller',
+    // Шаг 1: Запрос Telegram ID нового продавца
+    (ctx) => {
+      ctx.reply(
+        'Введите Telegram ID нового продавца:\n\n' +
+        'Примечание: Если пользователь еще не взаимодействовал с ботом, вам придется ввести его данные вручную.',
+        cancelButton
+      );
+      return ctx.wizard.next();
+    },
+    // Шаг 2: Создание нового продавца или переход к ручному вводу
+    async (ctx) => {
+      if (ctx.message.text === 'Отмена') {
+        ctx.reply('Операция отменена.', adminManagementKeyboard);
+        return ctx.scene.leave();
+      }
+      
+      const newSellerId = parseInt(ctx.message.text);
+      if (isNaN(newSellerId) || newSellerId <= 0) {
+        ctx.reply('Пожалуйста, введите корректный положительный Telegram ID (число).');
+        return;
+      }
+      
+      try {
+        // Проверяем, существует ли уже такой продавец
+        const existingSeller = await Admin.findOne({ telegramId: newSellerId });
+        if (existingSeller) {
+          if (existingSeller.isActive && existingSeller.role === 'seller') {
+            ctx.reply('Этот пользователь уже является продавцом.', adminManagementKeyboard);
+            return ctx.scene.leave();
+          } else if (existingSeller.isActive && existingSeller.role === 'admin') {
+            ctx.reply('Этот пользователь уже является администратором и имеет больше прав, чем продавец.', adminManagementKeyboard);
+            return ctx.scene.leave();
+          } else {
+            // Если продавец был деактивирован, активируем его снова
+            existingSeller.isActive = true;
+            existingSeller.role = 'seller';
+            existingSeller.addedBy = ctx.from.id;
+            existingSeller.addedAt = new Date();
+            await existingSeller.save();
+            ctx.reply('Продавец успешно восстановлен.', adminManagementKeyboard);
+            return ctx.scene.leave();
+          }
+        }
+        
+        // Попытка получить информацию о пользователе через Telegram API
+        try {
+          const userInfo = await ctx.telegram.getChat(newSellerId);
+          
+          const newSeller = new Admin({
+            telegramId: newSellerId,
+            firstName: userInfo.first_name || '',
+            lastName: userInfo.last_name || '',
+            username: userInfo.username || '',
+            role: 'seller',
+            addedBy: ctx.from.id,
+            isActive: true,
+            addedAt: new Date()
+          });
+          
+          await newSeller.save();
+          
+          ctx.reply(
+            `✅ Продавец успешно добавлен!\n\n` +
+            `ID: ${newSeller.telegramId}\n` +
+            `Имя: ${newSeller.firstName || 'Не указано'}\n` +
+            `Фамилия: ${newSeller.lastName || 'Не указана'}\n` +
+            `Юзернейм: ${newSeller.username ? '@' + newSeller.username : 'Не указан'}`,
+            adminManagementKeyboard
+          );
+          
+          return ctx.scene.leave();
+        } catch (telegramError) {
+          // Если пользователь не найден, продолжаем с ручным вводом данных
+          ctx.wizard.state.newSellerId = newSellerId;
+          
+          ctx.reply(
+            `ℹ️ Не удалось автоматически получить данные пользователя с ID ${newSellerId}.\n\n` +
+            `Возможные причины:\n` +
+            `• Пользователь ещё не взаимодействовал с ботом\n` +
+            `• Пользователь заблокировал бота\n` +
+            `• ID введен неверно\n\n` +
+            `Теперь вам нужно ввести данные продавца вручную.\n\n` +
+            `Пожалуйста, введите имя продавца:`,
+            cancelButton
+          );
+          
+          return ctx.wizard.next();
+        }
+      } catch (error) {
+        console.error('Error in seller addition process:', error);
+        ctx.reply('Произошла ошибка при добавлении продавца. Пожалуйста, попробуйте снова позже.', adminManagementKeyboard);
+        return ctx.scene.leave();
+      }
+    },
+    // Шаг 3: Ввод имени вручную
+    (ctx) => {
+      if (ctx.message.text === 'Отмена') {
+        ctx.reply('Операция отменена.', adminManagementKeyboard);
+        return ctx.scene.leave();
+      }
+      
+      ctx.wizard.state.firstName = ctx.message.text;
+      ctx.reply('Введите фамилию продавца (или напишите "Нет", если не требуется):', cancelButton);
+      return ctx.wizard.next();
+    },
+    // Шаг 4: Ввод фамилии вручную
+    (ctx) => {
+      if (ctx.message.text === 'Отмена') {
+        ctx.reply('Операция отменена.', adminManagementKeyboard);
+        return ctx.scene.leave();
+      }
+      
+      ctx.wizard.state.lastName = ctx.message.text === 'Нет' ? '' : ctx.message.text;
+      ctx.reply('Введите username продавца без символа @ (или напишите "Нет", если отсутствует):', cancelButton);
+      return ctx.wizard.next();
+    },
+    // Шаг 5: Ввод username и сохранение данных
+    async (ctx) => {
+      if (ctx.message.text === 'Отмена') {
+        ctx.reply('Операция отменена.', adminManagementKeyboard);
+        return ctx.scene.leave();
+      }
+      
+      try {
+        const username = ctx.message.text === 'Нет' ? '' : ctx.message.text.replace('@', '');
+        
+        const newSeller = new Admin({
+          telegramId: ctx.wizard.state.newSellerId,
+          firstName: ctx.wizard.state.firstName,
+          lastName: ctx.wizard.state.lastName,
+          username: username,
+          role: 'seller',
+          addedBy: ctx.from.id,
+          isActive: true,
+          addedAt: new Date()
+        });
+        
+        await newSeller.save();
+        
+        ctx.reply(
+          `✅ Продавец успешно добавлен вручную!\n\n` +
+          `ID: ${newSeller.telegramId}\n` +
+          `Имя: ${newSeller.firstName || 'Не указано'}\n` +
+          `Фамилия: ${newSeller.lastName || 'Не указана'}\n` +
+          `Юзернейм: ${newSeller.username ? '@' + newSeller.username : 'Не указан'}\n\n` +
+          `Обратите внимание: Данные были добавлены вручную. Когда пользователь взаимодействует с ботом, его данные могут обновиться автоматически.`,
+          adminManagementKeyboard
+        );
+        
+        return ctx.scene.leave();
+      } catch (error) {
+        console.error('Error saving seller with manual data:', error);
+        ctx.reply('Произошла ошибка при сохранении данных продавца.', adminManagementKeyboard);
+        return ctx.scene.leave();
+      }
+    }
+  );
+  
+  // Сцена для списка продавцов
+  const sellerListScene = new Scenes.BaseScene('seller-list');
+  
+  sellerListScene.enter(async (ctx) => {
+    try {
+      const sellers = await Admin.find({ role: 'seller' }).sort({ addedAt: -1 });
+      
+      if (sellers.length === 0) {
+        ctx.reply('Продавцов пока нет.', adminManagementKeyboard);
+        return ctx.scene.leave();
+      }
+      
+      // Отправляем список продавцов с кнопками для каждого продавца
+      const keyboard = [];
+      sellers.forEach((seller) => {
+        const status = seller.isActive ? '✅' : '❌';
+        keyboard.push([
+          Markup.button.callback(
+            `${status} ${seller.firstName} ${seller.lastName} ${seller.username ? '@' + seller.username : ''}`,
+            `seller_view:${seller.telegramId}`
+          )
+        ]);
+      });
+      
+      // Добавляем кнопку "Назад"
+      keyboard.push([Markup.button.callback('◀️ Назад', 'back_to_admin_management')]);
+      
+      ctx.reply(
+        'Список продавцов:\nВыберите продавца для управления:',
+        Markup.inlineKeyboard(keyboard)
+      );
+      
+      ctx.session.listMode = 'sellers';
+    } catch (error) {
+      console.error('Error in seller list scene:', error);
+      ctx.reply('Произошла ошибка при загрузке продавцов.', adminManagementKeyboard);
+      return ctx.scene.leave();
+    }
+  });
+  
   // Сцена аутентификации администратора
   const adminAuthScene = new Scenes.BaseScene('admin-auth');
   
@@ -505,6 +705,7 @@ module.exports = (bot) => {
             firstName: userInfo.first_name || '',
             lastName: userInfo.last_name || '',
             username: userInfo.username || '',
+            role: 'admin', // Явно указываем роль
             addedBy: ctx.from.id,
             isActive: true,
             addedAt: new Date()
@@ -695,8 +896,7 @@ module.exports = (bot) => {
   
   adminListScene.enter(async (ctx) => {
     try {
-      const admins = await Admin.find().sort({ addedAt: -1 });
-      
+      const admins = await Admin.find({ role: 'admin' }).sort({ addedAt: -1 });      
       if (admins.length === 0) {
         ctx.reply('Администраторов пока нет.', adminManagementKeyboard);
         return ctx.scene.leave();
@@ -706,9 +906,10 @@ module.exports = (bot) => {
       const keyboard = [];
       admins.forEach((admin) => {
         const status = admin.isActive ? '✅' : '❌';
+        const roleIcon = admin.role === 'admin' ? '👑' : '🛒'; // Иконка роли
         keyboard.push([
           Markup.button.callback(
-            `${status} ${admin.firstName} ${admin.lastName} ${admin.username ? '@' + admin.username : ''}`,
+            `${status} ${roleIcon} ${admin.firstName} ${admin.lastName} ${admin.username ? '@' + admin.username : ''}`,
             `admin_view:${admin.telegramId}`
           )
         ]);
@@ -926,13 +1127,13 @@ module.exports = (bot) => {
     promoListAdminScene,
     adminListScene,
     editPromoScene,
-    activatePromoScene,      // Добавляем новую сцену для активации
-    activatedPromosScene     // Добавляем сцену истории активаций
+    activatePromoScene,    
+    activatedPromosScene,     
+    addSellerScene,      
+    sellerListScene      
   ]);
   
   bot.use(stage.middleware());
-  
-  
   
   bot.action(/activate_promo:(.+):(.+)/, isAdmin, async (ctx) => {
     try {
@@ -1268,6 +1469,181 @@ module.exports = (bot) => {
     }
   });
 
+  // Обработчик для просмотра продавца
+  bot.action(/seller_view:(.+)/, isAdmin, async (ctx) => {
+    try {
+      const sellerId = parseInt(ctx.match[1]);
+      
+      const seller = await Admin.findOne({ telegramId: sellerId, role: 'seller' });
+      if (!seller) {
+        return ctx.answerCbQuery('Продавец не найден.');
+      }
+      
+      // Получаем количество активаций продавца
+      const activationsCount = await ActivatedPromo.countDocuments({ activatedBy: sellerId });
+      
+      await ctx.answerCbQuery();
+      
+      await ctx.editMessageText(
+        `Продавец: ${seller.firstName} ${seller.lastName} ${seller.username ? '@' + seller.username : ''}\n\n` +
+        `ID: ${seller.telegramId}\n` +
+        `Статус: ${seller.isActive ? '✅ Активен' : '❌ Неактивен'}\n` +
+        `Добавлен: ${formatDate(seller.addedAt)}\n` +
+        `Активировано промокодов: ${activationsCount}\n\n` +
+        'Выберите действие:',
+        Markup.inlineKeyboard([
+          [
+            Markup.button.callback(
+              seller.isActive ? '🔴 Деактивировать' : '🟢 Активировать',
+              `seller_toggle:${seller.telegramId}`
+            )
+          ],
+          [Markup.button.callback('🗑️ Удалить', `seller_delete:${seller.telegramId}`)],
+          [Markup.button.callback('📊 Посмотреть статистику', `seller_stats:${seller.telegramId}`)],
+          [Markup.button.callback('◀️ Назад к списку', 'seller_back_to_list')]
+        ])
+      );
+    } catch (error) {
+      console.error('Error viewing seller:', error);
+      ctx.answerCbQuery('Произошла ошибка при просмотре продавца.');
+    }
+  });
+  
+  // Обработчик для переключения статуса продавца
+  bot.action(/seller_toggle:(.+)/, isAdmin, async (ctx) => {
+    try {
+      const sellerId = parseInt(ctx.match[1]);
+      
+      const seller = await Admin.findOne({ telegramId: sellerId, role: 'seller' });
+      if (!seller) {
+        return ctx.answerCbQuery('Продавец не найден.');
+      }
+      
+      seller.isActive = !seller.isActive;
+      await seller.save();
+      
+      // Получаем количество активаций продавца
+      const activationsCount = await ActivatedPromo.countDocuments({ activatedBy: sellerId });
+      
+      await ctx.answerCbQuery(`Продавец ${seller.isActive ? 'активирован' : 'деактивирован'}.`);
+      
+      // Обновляем сообщение
+      await ctx.editMessageText(
+        `Продавец: ${seller.firstName} ${seller.lastName} ${seller.username ? '@' + seller.username : ''}\n\n` +
+        `ID: ${seller.telegramId}\n` +
+        `Статус: ${seller.isActive ? '✅ Активен' : '❌ Неактивен'}\n` +
+        `Добавлен: ${formatDate(seller.addedAt)}\n` +
+        `Активировано промокодов: ${activationsCount}\n\n` +
+        'Выберите действие:',
+        Markup.inlineKeyboard([
+          [
+            Markup.button.callback(
+              seller.isActive ? '🔴 Деактивировать' : '🟢 Активировать',
+              `seller_toggle:${seller.telegramId}`
+            )
+          ],
+          [Markup.button.callback('🗑️ Удалить', `seller_delete:${seller.telegramId}`)],
+          [Markup.button.callback('📊 Посмотреть статистику', `seller_stats:${seller.telegramId}`)],
+          [Markup.button.callback('◀️ Назад к списку', 'seller_back_to_list')]
+        ])
+      );
+    } catch (error) {
+      console.error('Error toggling seller:', error);
+      ctx.answerCbQuery('Произошла ошибка при изменении статуса продавца.');
+    }
+  });
+  
+  // Обработчик для удаления продавца
+  bot.action(/seller_delete:(.+)/, isAdmin, async (ctx) => {
+    try {
+      const sellerId = parseInt(ctx.match[1]);
+      
+      await Admin.findOneAndDelete({ telegramId: sellerId, role: 'seller' });
+      
+      await ctx.answerCbQuery('Продавец успешно удален.');
+      await ctx.deleteMessage();
+      
+      // Возвращаем пользователя к списку продавцов
+      ctx.scene.enter('seller-list');
+    } catch (error) {
+      console.error('Error deleting seller:', error);
+      ctx.answerCbQuery('Произошла ошибка при удалении продавца.');
+    }
+  });
+  
+  bot.action(/seller_stats:(.+)/, isAdmin, async (ctx) => {
+    try {
+      const sellerId = parseInt(ctx.match[1]);
+      
+      const seller = await Admin.findOne({ telegramId: sellerId, role: 'seller' });
+      if (!seller) {
+        return ctx.answerCbQuery('Продавец не найден.');
+      }
+      
+      // Получаем последние активации этого продавца
+      const recentActivations = await ActivatedPromo.find({ activatedBy: sellerId })
+        .sort({ activatedAt: -1 })
+        .limit(10)
+        .populate('promoId');
+      
+      // Группируем активации по типам промокодов для статистики
+      const promoStats = {};
+      
+      const allActivations = await ActivatedPromo.find({ activatedBy: sellerId });
+      
+      for (const activation of allActivations) {
+        if (!promoStats[activation.promoId]) {
+          promoStats[activation.promoId] = 0;
+        }
+        promoStats[activation.promoId]++;
+      }
+      
+      // Получаем названия промокодов по их ID для статистики
+      const promoNames = {};
+      const promoIds = Object.keys(promoStats);
+      
+      for (const promoId of promoIds) {
+        const promo = await Promo.findById(promoId);
+        promoNames[promoId] = promo ? promo.name : 'Удаленный промокод';
+      }
+      
+      // Формируем сообщение со статистикой
+      let message = `📊 Статистика продавца: ${seller.firstName} ${seller.lastName}\n\n`;
+      message += `Всего активировано промокодов: ${seller.activatedPromos || allActivations.length}\n\n`;
+      
+      message += '🔍 Статистика по типам промокодов:\n';
+      for (const promoId in promoStats) {
+        message += `- ${promoNames[promoId]}: ${promoStats[promoId]} шт.\n`;
+      }
+      
+      message += '\n🕒 Последние активации:\n';
+      if (recentActivations.length === 0) {
+        message += 'Нет недавних активаций\n';
+      } else {
+        for (const activation of recentActivations) {
+          const promoName = activation.promoId ? activation.promoId.name : 'Удаленный промокод';
+          message += `- ${formatDate(activation.activatedAt)}: ${promoName} (${activation.code})\n`;
+        }
+      }
+      
+      await ctx.answerCbQuery('Загружаем статистику продавца.');
+      await ctx.editMessageText(
+        message,
+        Markup.inlineKeyboard([
+          [Markup.button.callback('◀️ Назад к продавцу', `seller_view:${sellerId}`)]
+        ])
+      );
+    } catch (error) {
+      console.error('Error viewing seller stats:', error);
+      ctx.answerCbQuery('Произошла ошибка при загрузке статистики продавца.');
+    }
+  });
+  
+  bot.action('seller_back_to_list', isAdmin, (ctx) => {
+    ctx.answerCbQuery('Возвращаюсь к списку продавцов.');
+    ctx.deleteMessage();
+    ctx.scene.enter('seller-list');
+  });
   
   bot.hears('Активировать промокод вручную', isAdmin, (ctx) => {
     ctx.scene.enter('activate-promo');
@@ -1278,9 +1654,23 @@ module.exports = (bot) => {
     ctx.scene.enter('activated-promos');
   });
   
-  bot.hears('Активировать промокод', isAdmin, (ctx) => {
-    ctx.scene.enter('activate-user-promo');
+  bot.hears('Активировать промокод', isAdmin, async (ctx) => {
+    try {
+      // Прямая реализация активации промокода
+      ctx.reply('Введите индивидуальный код промокода для активации2:', cancelButton);
+      
+      // Сохраняем состояние, что пользователь в процессе активации промокода
+      ctx.session.awaitingPromoCode = true;
+      
+      return;
+    } catch (error) {
+      console.error('Error in activate promo handler:', error);
+      return ctx.reply('Произошла ошибка при инициализации активации промокода.', adminKeyboard);
+    }
   });
+  
+  // Добавляем обработчик для ввода промокода после запроса
+
   
   // Обработка кнопок меню админ-панели
   bot.hears('Управление промокодами', isAdmin, (ctx) => {
@@ -1314,6 +1704,16 @@ module.exports = (bot) => {
   bot.hears('Назад', isAdmin, (ctx) => {
     ctx.reply('Выберите раздел:', adminKeyboard);
   });
+  
+  bot.hears('Добавить продавца', isAdmin, (ctx) => {
+    ctx.scene.enter('add-seller');
+  });
+  
+  bot.hears('Список продавцов', isAdmin, (ctx) => {
+    ctx.scene.enter('seller-list');
+  });
+  
+
 
   return {
     // Возвращаем сцены для регистрации в index.js
@@ -1324,8 +1724,11 @@ module.exports = (bot) => {
       promoListAdminScene,
       adminListScene,
       editPromoScene,
-      activatePromoScene,      // Добавляем новую сцену для активации
-      activatedPromosScene     // Добавляем сцену истории активаций
+      activatePromoScene,     
+      activatedPromosScene,
+      addSellerScene,      
+      sellerListScene,
+      activateUserPromoScene,
     ]
   };
 };
